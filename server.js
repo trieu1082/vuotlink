@@ -24,7 +24,6 @@ if (!GITHUB_TOKEN || !GITHUB_REPO) {
     process.exit(1);
 }
 
-// ====== Mã hóa / Giải mã (optional) ======
 function encrypt(text) {
     if (!ENCRYPTION_KEY) return text;
     const key = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
@@ -45,7 +44,6 @@ function decrypt(text) {
     } catch { return null; }
 }
 
-// ====== GitHub API helpers ======
 const ghApi = axios.create({
     baseURL: `https://api.github.com/repos/${GITHUB_REPO}`,
     headers: {
@@ -57,8 +55,7 @@ const ghApi = axios.create({
 async function fetchFileFromGithub(filePath) {
     try {
         const res = await ghApi.get(`/contents/${filePath}`, { params: { ref: GITHUB_BRANCH } });
-        const content = Buffer.from(res.data.content, 'base64').toString('utf8');
-        return decrypt(content);
+        return decrypt(Buffer.from(res.data.content, 'base64').toString('utf8'));
     } catch (err) {
         if (err.response && err.response.status === 404) return null;
         throw err;
@@ -75,23 +72,21 @@ async function pushFileToGithub(filePath, content) {
     } catch (err) {
         if (err.response && err.response.status !== 404) throw err;
     }
-    const body = {
+    await ghApi.put(`/contents/${filePath}`, {
         message: 'update db',
         content: encoded,
         branch: GITHUB_BRANCH,
-    };
-    if (sha) body.sha = sha;
-    await ghApi.put(`/contents/${filePath}`, body);
+        ...(sha && { sha })
+    });
 }
 
-// ====== Database ======
 const DB_PATH = 'db.json';
 const DB_BACKUP_PATH = 'db.backup.json';
 let DB = {
-    users: {},        // key: username
-    links: [],        // { id, user_id, original_url, short_code, reward_per_click, user_reward_per_click, clicks, created_at }
-    clicks: [],       // { link_id, ip, user_agent, time }
-    codes: [],        // { id, user_id, code, amount, status, created_at }
+    users: {},
+    links: [],
+    clicks: [],
+    codes: [],
     nextLinkId: 1,
     nextCodeId: 1,
 };
@@ -100,44 +95,27 @@ function cleanExpiredLinks() {
     const now = Date.now();
     DB.links = DB.links.filter(link => {
         const created = new Date(link.created_at).getTime();
-        const expires = created + 4 * 60 * 60 * 1000; // 4 tiếng
-        return now < expires;
+        return now < created + 4 * 60 * 60 * 1000;
     });
 }
 
 async function loadDB() {
     try {
         let raw = await fetchFileFromGithub(DB_PATH);
-        if (raw) {
-            const data = JSON.parse(raw);
-            if (data && data.users) {
-                DB = data;
-                if (!DB.links) DB.links = [];
-                if (!DB.clicks) DB.clicks = [];
-                if (!DB.codes) DB.codes = [];
-                if (!DB.nextLinkId) DB.nextLinkId = 1;
-                if (!DB.nextCodeId) DB.nextCodeId = 1;
-                cleanExpiredLinks();
-                return;
-            }
+        if (raw && (raw = JSON.parse(raw)) && raw.users) {
+            DB = { ...DB, ...raw };
+            cleanExpiredLinks();
+            return;
         }
-        raw = await fetchFileFromGithub(DB_BACKUP_PATH);
-        if (raw) {
-            const data = JSON.parse(raw);
-            if (data && data.users) {
-                DB = data;
-                if (!DB.links) DB.links = [];
-                if (!DB.clicks) DB.clicks = [];
-                if (!DB.codes) DB.codes = [];
-                if (!DB.nextLinkId) DB.nextLinkId = 1;
-                if (!DB.nextCodeId) DB.nextCodeId = 1;
-                cleanExpiredLinks();
-                return;
-            }
+    } catch {}
+    try {
+        let raw = await fetchFileFromGithub(DB_BACKUP_PATH);
+        if (raw && (raw = JSON.parse(raw)) && raw.users) {
+            DB = { ...DB, ...raw };
+            cleanExpiredLinks();
+            return;
         }
-    } catch (e) {
-        console.error('Lỗi load DB từ GitHub, dùng DB rỗng', e);
-    }
+    } catch {}
     DB = { users: {}, links: [], clicks: [], codes: [], nextLinkId: 1, nextCodeId: 1 };
 }
 
@@ -149,18 +127,14 @@ function scheduleSave() {
             const data = JSON.stringify(DB);
             await pushFileToGithub(DB_PATH, data);
             await pushFileToGithub(DB_BACKUP_PATH, data);
-            console.log('DB saved to GitHub');
-        } catch (err) {
-            console.error('Lỗi save DB', err);
-        }
+            console.log('DB saved');
+        } catch (e) { console.error('Save error:', e); }
     }, 5000);
 }
 
-// ====== JWT Middleware ======
 function authenticateToken(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token is required' });
+    const token = (req.headers['authorization'] || '').split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Token required' });
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ error: 'Invalid token' });
         req.user = user;
@@ -172,20 +146,54 @@ function generateShortCode() {
     return crypto.randomBytes(3).toString('hex');
 }
 
-// ====== API Endpoints ======
+// ---------- API DỊCH VỤ TẠO LINK RÚT GỌN ----------
+const serviceConfig = {
+    linktot: {
+        url: process.env.LINKTOT_API_URL || 'https://linktot.net/api',
+        token: process.env.LINKTOT_API_TOKEN,
+    },
+    layma: {
+        url: process.env.LAYMA_API_URL || 'https://quanly.layma.net/api',
+        token: process.env.LAYMA_API_TOKEN,
+    },
+    link4m: {
+        url: process.env.LINK4M_API_URL || 'https://my.link4m.com/api',
+        token: process.env.LINK4M_API_TOKEN,
+    },
+};
 
-// Đăng ký
+async function createServiceShortLink(service, longUrl) {
+    const cfg = serviceConfig[service];
+    if (!cfg || !cfg.token) throw new Error('Service not configured');
+    // Gọi API dịch vụ – giả định POST với JSON { url: longUrl, api_token: cfg.token }
+    try {
+        const response = await axios.post(cfg.url, {
+            url: longUrl,
+            api_token: cfg.token,
+        }, { timeout: 10000 });
+        if (response.data && response.data.short_url) {
+            return response.data.short_url;
+        }
+        if (response.data && response.data.short) {
+            return response.data.short;
+        }
+        throw new Error('Unexpected response format');
+    } catch (err) {
+        throw new Error(`Service error: ${err.message}`);
+    }
+}
+
+// ---------- ENDPOINTS ----------
 app.post('/api/register', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
-    if (DB.users[username]) return res.status(400).json({ error: 'Username already exists' });
+    if (DB.users[username]) return res.status(400).json({ error: 'Username exists' });
     const id = Object.keys(DB.users).length + 1;
     DB.users[username] = { id, username, password, balance: 0, role: 'user' };
     scheduleSave();
     res.json({ id, username });
 });
 
-// Đăng nhập
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
     const user = DB.users[username];
@@ -194,142 +202,114 @@ app.post('/api/login', (req, res) => {
     res.json({ token, user: { id: user.id, username: user.username, balance: user.balance, role: user.role } });
 });
 
-// Tạo link rút gọn
-app.post('/api/shorten', authenticateToken, (req, res) => {
-    const { originalUrl, customReward, customUserReward } = req.body;
+app.post('/api/shorten', authenticateToken, async (req, res) => {
+    const { service, url, userReward } = req.body;
     const userId = req.user.id;
-    if (!originalUrl) return res.status(400).json({ error: 'Missing originalUrl' });
-    const reward = customReward || 700;
-    const userReward = customUserReward || 500;
-    const shortCode = generateShortCode();
-    const link = {
-        id: DB.nextLinkId++,
-        user_id: userId,
-        original_url: originalUrl,
-        short_code: shortCode,
-        reward_per_click: reward,
-        user_reward_per_click: userReward,
-        clicks: 0,
-        created_at: new Date().toISOString()
-    };
-    DB.links.push(link);
-    scheduleSave();
-    const shortUrl = `${req.protocol}://${req.get('host')}/${shortCode}`;
-    res.json({ shortCode, shortUrl });
+    if (!service || !url) return res.status(400).json({ error: 'Missing service or url' });
+    if (!['linktot', 'layma', 'link4m'].includes(service)) return res.status(400).json({ error: 'Invalid service' });
+
+    try {
+        const shortUrl = await createServiceShortLink(service, url);
+        const shortCode = generateShortCode();
+        const link = {
+            id: DB.nextLinkId++,
+            user_id: userId,
+            service,
+            original_url: shortUrl,
+            short_code: shortCode,
+            reward_per_click: 700,
+            user_reward_per_click: userReward || 500,
+            clicks: 0,
+            created_at: new Date().toISOString()
+        };
+        DB.links.push(link);
+        scheduleSave();
+        res.json({ shortCode, shortUrl: `${req.protocol}://${req.get('host')}/${shortCode}` });
+    } catch (err) {
+        res.status(502).json({ error: err.message });
+    }
 });
 
-// Danh sách link của user
 app.get('/api/links', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    const userLinks = DB.links.filter(link => link.user_id === userId);
-    res.json(userLinks);
+    res.json(DB.links.filter(l => l.user_id === req.user.id));
 });
 
-// Redirect và cộng coin
 app.get('/:shortCode', (req, res) => {
     const code = req.params.shortCode;
     const link = DB.links.find(l => l.short_code === code);
     if (!link) return res.status(404).send('<h1>Link not found</h1>');
-    
-    // Kiểm tra hết hạn
-    const createdTime = new Date(link.created_at).getTime();
-    const expiresTime = createdTime + 4 * 60 * 60 * 1000;
-    if (Date.now() > expiresTime) {
+
+    const created = new Date(link.created_at).getTime();
+    if (Date.now() > created + 4 * 60 * 60 * 1000) {
         DB.links = DB.links.filter(l => l.id !== link.id);
         scheduleSave();
-        return res.status(410).send('<h1>Link đã hết hạn</h1>');
+        return res.status(410).send('<h1>Link expired</h1>');
     }
 
     const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-
-    // Anti-bypass: không cộng tiền nếu cùng IP trong 1 giờ
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    const recentClick = DB.clicks.find(c => c.link_id === link.id && c.ip === ip && c.time > oneHourAgo);
-    if (recentClick) {
+    const ua = req.headers['user-agent'] || '';
+    const oneHourAgo = Date.now() - 3600000;
+    if (DB.clicks.some(c => c.link_id === link.id && c.ip === ip && c.time > oneHourAgo)) {
         return res.redirect(link.original_url);
     }
 
-    // Ghi log click
-    DB.clicks.push({ link_id: link.id, ip, user_agent: userAgent, time: Date.now() });
+    DB.clicks.push({ link_id: link.id, ip, user_agent: ua, time: Date.now() });
     link.clicks++;
-
-    // Cộng coin cho chủ link
     const user = Object.values(DB.users).find(u => u.id === link.user_id);
-    if (user) {
-        user.balance = (user.balance || 0) + (link.user_reward_per_click || 500);
-    }
+    if (user) user.balance = (user.balance || 0) + (link.user_reward_per_click || 500);
     scheduleSave();
     res.redirect(link.original_url);
 });
 
-// Thông tin user
 app.get('/api/user', authenticateToken, (req, res) => {
     const user = Object.values(DB.users).find(u => u.id === req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ id: user.id, username: user.username, balance: user.balance, role: user.role });
 });
 
-// Đổi coin thành code
 app.post('/api/create-code', authenticateToken, (req, res) => {
     const { amount } = req.body;
-    const userId = req.user.id;
-    if (!amount || amount < 10000) return res.status(400).json({ error: 'Minimum withdrawal is 10,000 coin' });
-    const user = Object.values(DB.users).find(u => u.id === userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
+    if (!amount || amount < 10000) return res.status(400).json({ error: 'Min 10k' });
+    const user = Object.values(DB.users).find(u => u.id === req.user.id);
+    if (!user || user.balance < amount) return res.status(400).json({ error: 'Insufficient balance' });
     const code = crypto.randomBytes(4).toString('hex').toUpperCase() + '-' + amount;
-    const newCode = {
+    DB.codes.push({
         id: DB.nextCodeId++,
-        user_id: userId,
+        user_id: req.user.id,
         code,
         amount,
         status: 'pending',
         created_at: new Date().toISOString()
-    };
-    DB.codes.push(newCode);
+    });
     user.balance -= amount;
     scheduleSave();
     res.json({ success: true, code });
 });
 
-// Admin: lấy danh sách code
 app.get('/api/admin/codes', authenticateToken, (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Access denied' });
+    if (!['admin','owner'].includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
     const search = req.query.search || '';
-    const filtered = DB.codes.filter(c => c.code.includes(search));
-    const result = filtered.map(c => {
-        const user = Object.values(DB.users).find(u => u.id === c.user_id);
-        return { ...c, username: user ? user.username : 'unknown' };
-    });
+    const result = DB.codes
+        .filter(c => c.code.includes(search))
+        .map(c => ({ ...c, username: Object.values(DB.users).find(u => u.id === c.user_id)?.username || 'unknown' }));
     res.json(result);
 });
 
-// Admin: cập nhật trạng thái code
 app.post('/api/admin/code-status', authenticateToken, (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Access denied' });
+    if (!['admin','owner'].includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
     const { codeId, status } = req.body;
-    const codeEntry = DB.codes.find(c => c.id === codeId);
-    if (!codeEntry) return res.status(404).json({ error: 'Code not found' });
-    codeEntry.status = status;
+    const entry = DB.codes.find(c => c.id === codeId);
+    if (!entry) return res.status(404).json({ error: 'Code not found' });
+    entry.status = status;
     scheduleSave();
     res.json({ success: true });
 });
 
-// Trang chủ
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'pmt.html'));
-});
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'pmt.html')));
 
-// Dọn link hết hạn mỗi 10 phút
 setInterval(() => {
     cleanExpiredLinks();
     scheduleSave();
 }, 10 * 60 * 1000);
 
-// Khởi động
-loadDB().then(() => {
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-}).catch(err => {
-    console.error('Không thể khởi động server', err);
-});
+loadDB().then(() => app.listen(PORT, () => console.log(`Server running on port ${PORT}`)));
