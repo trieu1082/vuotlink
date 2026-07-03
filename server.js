@@ -146,44 +146,42 @@ function generateShortCode() {
     return crypto.randomBytes(3).toString('hex');
 }
 
-// ---------- API DỊCH VỤ TẠO LINK RÚT GỌN ----------
-const serviceConfig = {
-    linktot: {
-        url: process.env.LINKTOT_API_URL || 'https://linktot.net/api',
-        token: process.env.LINKTOT_API_TOKEN,
-    },
-    layma: {
-        url: process.env.LAYMA_API_URL || 'https://quanly.layma.net/api',
-        token: process.env.LAYMA_API_TOKEN,
-    },
-    link4m: {
-        url: process.env.LINK4M_API_URL || 'https://my.link4m.com/api',
-        token: process.env.LINK4M_API_TOKEN,
-    },
-};
-
-async function createServiceShortLink(service, longUrl) {
-    const cfg = serviceConfig[service];
-    if (!cfg || !cfg.token) throw new Error('Service not configured');
-    // Gọi API dịch vụ – giả định POST với JSON { url: longUrl, api_token: cfg.token }
-    try {
-        const response = await axios.post(cfg.url, {
-            url: longUrl,
-            api_token: cfg.token,
-        }, { timeout: 10000 });
-        if (response.data && response.data.short_url) {
-            return response.data.short_url;
-        }
-        if (response.data && response.data.short) {
-            return response.data.short;
-        }
-        throw new Error('Unexpected response format');
-    } catch (err) {
-        throw new Error(`Service error: ${err.message}`);
-    }
+// ========== GỌI API TẠO LINK RÚT GỌN THẬT ==========
+async function createLinkTotShortLink(longUrl) {
+    throw new Error('LinkTot chưa được cấu hình (thiếu token)');
 }
 
-// ---------- ENDPOINTS ----------
+async function createLaymaShortLink(longUrl) {
+    const token = process.env.LAYMA_API_TOKEN;
+    const baseUrl = process.env.LAYMA_API_URL || 'https://api.layma.net/api/admin/shortlink/quicklink';
+    if (!token) throw new Error('LayMa token not configured');
+    const url = `${baseUrl}?tokenUser=${token}&format=json&url=${encodeURIComponent(longUrl)}`;
+    const res = await axios.get(url, { timeout: 10000 });
+    if (res.data && res.data.short) {
+        return res.data.short;
+    }
+    throw new Error('LayMa response invalid');
+}
+
+async function createLink4mShortLink(longUrl) {
+    const token = process.env.LINK4M_API_TOKEN;
+    const baseUrl = process.env.LINK4M_API_URL || 'https://link4m.co/api-shorten/v2';
+    if (!token) throw new Error('Link4M token not configured');
+    const url = `${baseUrl}?api=${token}&url=${encodeURIComponent(longUrl)}`;
+    const res = await axios.get(url, { timeout: 10000 });
+    if (res.data && res.data.short) {
+        return res.data.short;
+    }
+    throw new Error('Link4M response invalid');
+}
+
+const serviceCreators = {
+    linktot: createLinkTotShortLink,
+    layma: createLaymaShortLink,
+    link4m: createLink4mShortLink,
+};
+
+// ========== ENDPOINTS ==========
 app.post('/api/register', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
@@ -203,22 +201,28 @@ app.post('/api/login', (req, res) => {
 });
 
 app.post('/api/shorten', authenticateToken, async (req, res) => {
-    const { service, url, userReward } = req.body;
-    const userId = req.user.id;
-    if (!service || !url) return res.status(400).json({ error: 'Missing service or url' });
-    if (!['linktot', 'layma', 'link4m'].includes(service)) return res.status(400).json({ error: 'Invalid service' });
+    const { service, url } = req.body;
+    if (!service || !url) {
+        return res.status(400).json({ error: 'Missing service or url' });
+    }
+    if (!['linktot', 'layma', 'link4m'].includes(service)) {
+        return res.status(400).json({ error: 'Invalid service' });
+    }
+
+    const createFn = serviceCreators[service];
+    if (!createFn) return res.status(400).json({ error: 'Service not supported' });
 
     try {
-        const shortUrl = await createServiceShortLink(service, url);
+        const shortUrl = await createFn(url);
         const shortCode = generateShortCode();
         const link = {
             id: DB.nextLinkId++,
-            user_id: userId,
+            user_id: req.user.id,
             service,
-            original_url: shortUrl,
+            original_url: shortUrl,   // link rút gọn của dịch vụ
             short_code: shortCode,
             reward_per_click: 700,
-            user_reward_per_click: userReward || 500,
+            user_reward_per_click: 500,   // bạn có thể cho user đặt
             clicks: 0,
             created_at: new Date().toISOString()
         };
@@ -226,7 +230,7 @@ app.post('/api/shorten', authenticateToken, async (req, res) => {
         scheduleSave();
         res.json({ shortCode, shortUrl: `${req.protocol}://${req.get('host')}/${shortCode}` });
     } catch (err) {
-        res.status(502).json({ error: err.message });
+        res.status(502).json({ error: `Tạo link thất bại: ${err.message}` });
     }
 });
 
