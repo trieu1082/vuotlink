@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinkHub - Rút Gọn Link Nhận Coin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 15px 20px; background: #1a1a2e; border-radius: 12px;
+            margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .logo { font-size: 1.8em; font-weight: bold; color: #6c5ce7; }
+        .user-info { display: flex; align-items: center; gap: 15px; }
+        .balance { background: #2d2d44; padding: 8px 16px; border-radius: 20px; color: #00d2d3; font-weight: bold; }
+        button {
+            background: #6c5ce7; color: white; border: none; padding: 10px 20px;
+            border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.3s;
+        }
+        button:hover { background: #5a4bd1; }
+        input, select {
+            background: #1e1e32; border: 1px solid #333; color: white;
+            padding: 12px; border-radius: 8px; width: 100%; margin: 8px 0;
+        }
+        .card {
+            background: #1a1a2e; padding: 25px; border-radius: 12px;
+            margin-bottom: 20px; box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+        }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .tab-btn { background: #2d2d44; padding: 10px 20px; border-radius: 20px; }
+        .tab-btn.active { background: #6c5ce7; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2d2d44; }
+        th { color: #a0a0b0; }
+        .hidden { display: none; }
+        .code-box {
+            background: #2d2d44; padding: 15px; border-radius: 8px;
+            font-family: monospace; font-size: 1.2em; margin: 15px 0;
+            word-break: break-all; text-align: center; color: #feca57;
+        }
+        .danger { background: #e74c3c; }
+        .success { color: #2ed573; }
+        .warning { color: #ffa502; }
+    </style>
+</head>
+<body>
+    <div class="container" id="app">
+        <!-- Auth -->
+        <div id="auth-section" class="card">
+            <h2 style="margin-bottom:20px;">Đăng nhập / Đăng ký</h2>
+            <input type="text" id="username" placeholder="Tên đăng nhập">
+            <input type="password" id="password" placeholder="Mật khẩu">
+            <div style="display:flex; gap:10px;">
+                <button onclick="login()">Đăng nhập</button>
+                <button onclick="register()" style="background:#5352ed;">Đăng ký</button>
+            </div>
+        </div>
+
+        <!-- Main -->
+        <div id="main-section" class="hidden">
+            <header>
+                <div class="logo">LinkHub</div>
+                <div class="user-info">
+                    <span id="display-username"></span>
+                    <span class="balance">💰 <span id="display-balance">0</span> Coin</span>
+                    <button onclick="logout()" class="danger">Đăng xuất</button>
+                </div>
+            </header>
+
+            <div class="tabs">
+                <button class="tab-btn active" onclick="showTab('shorten-tab')">✂️ Rút gọn link</button>
+                <button class="tab-btn" onclick="showTab('history-tab')">📋 Lịch sử</button>
+                <button class="tab-btn" onclick="showTab('withdraw-tab')">💸 Đổi Code</button>
+                <button class="tab-btn hidden" id="admin-tab-btn" onclick="showTab('admin-tab')">🛡️ Admin</button>
+            </div>
+
+            <div id="shorten-tab" class="card">
+                <h2>Tạo link rút gọn (tồn tại 4h)</h2>
+                <p>Dán link gốc từ LinkTot, LayMa, Link4M.</p>
+                <input type="text" id="original-url" placeholder="Link rút gọn của bạn...">
+                <button onclick="createLink()">Tạo Link</button>
+                <div id="created-link-result" class="hidden" style="margin-top:20px;">
+                    <p>Link: <strong id="shortened-url" style="color:#feca57;"></strong></p>
+                    <p>Bạn nhận: <strong id="reward-info">500 Coin</strong> / click</p>
+                    <button onclick="copyLink()">📋 Copy</button>
+                </div>
+            </div>
+
+            <div id="history-tab" class="card hidden">
+                <h2>Lịch sử link</h2>
+                <div id="links-table-container"></div>
+            </div>
+
+            <div id="withdraw-tab" class="card hidden">
+                <h2>Đổi Coin sang Code</h2>
+                <p>Tối thiểu <strong>10,000 Coin</strong></p>
+                <input type="number" id="withdraw-amount" placeholder="Số Coin">
+                <button onclick="withdraw()">Tạo Code</button>
+                <div id="code-result" class="hidden">
+                    <p>Code của bạn:</p>
+                    <div class="code-box" id="generated-code"></div>
+                    <p class="warning">Gửi code này cho Admin để nhận tiền mặt.</p>
+                </div>
+            </div>
+
+            <div id="admin-tab" class="card hidden">
+                <h2>Quản lý mã rút tiền (Admin)</h2>
+                <input type="text" id="search-code" placeholder="Tìm code...">
+                <button onclick="loadAdminCodes()">Tìm</button>
+                <table id="admin-codes-table">
+                    <thead><tr><th>User</th><th>Code</th><th>Giá trị</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = window.location.origin;
+        let token = localStorage.getItem('token');
+        let user = JSON.parse(localStorage.getItem('user'));
+
+        if (token && user) {
+            showMain();
+            loadUser();
+            loadLinks();
+        }
+
+        function login() {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            fetch(`${API}/api/login`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ username: u, password: p })
+            }).then(r=>r.json()).then(d=>{
+                if(d.error) return alert(d.error);
+                localStorage.setItem('token', d.token);
+                localStorage.setItem('user', JSON.stringify(d.user));
+                token = d.token; user = d.user;
+                showMain(); loadUser(); loadLinks();
+            });
+        }
+
+        function register() {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            fetch(`${API}/api/register`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ username: u, password: p })
+            }).then(r=>r.json()).then(d=>{
+                if(d.error) return alert(d.error);
+                alert('Đăng ký thành công! Hãy đăng nhập.');
+            });
+        }
+
+        function logout() {
+            localStorage.clear();
+            location.reload();
+        }
+
+        function showMain() {
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('main-section').classList.remove('hidden');
+            document.getElementById('display-username').textContent = user.username;
+            document.getElementById('display-balance').textContent = user.balance;
+            if (user.role === 'admin' || user.role === 'owner') {
+                document.getElementById('admin-tab-btn').classList.remove('hidden');
+            }
+        }
+
+        function loadUser() {
+            fetch(`${API}/api/user`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(r=>r.json()).then(d=>{
+                user = d;
+                document.getElementById('display-balance').textContent = d.balance;
+            });
+        }
+
+        function showTab(id) {
+            document.querySelectorAll('.card').forEach(c => c.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        function createLink() {
+            const url = document.getElementById('original-url').value;
+            fetch(`${API}/api/shorten`, {
+                method:'POST',
+                headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ originalUrl: url })
+            }).then(r=>r.json()).then(d=>{
+                if(d.error) return alert(d.error);
+                document.getElementById('shortened-url').textContent = d.shortUrl;
+                document.getElementById('reward-info').textContent = '500 Coin';
+                document.getElementById('created-link-result').classList.remove('hidden');
+                loadLinks();
+            });
+        }
+
+        function copyLink() {
+            navigator.clipboard.writeText(document.getElementById('shortened-url').textContent);
+            alert('Đã copy');
+        }
+
+        function loadLinks() {
+            fetch(`${API}/api/links`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(r=>r.json()).then(links => {
+                const c = document.getElementById('links-table-container');
+                if (!links.length) { c.innerHTML = '<p>Chưa có link nào.</p>'; return; }
+                let html = '<table><thead><tr><th>Link</th><th>Click</th><th>Ngày tạo</th></tr></thead><tbody>';
+                links.forEach(l => {
+                    html += `<tr><td>${API}/${l.short_code}</td><td>${l.clicks}</td><td>${l.created_at}</td></tr>`;
+                });
+                html += '</tbody></table>';
+                c.innerHTML = html;
+            });
+        }
+
+        function withdraw() {
+            const amount = parseInt(document.getElementById('withdraw-amount').value);
+            if (!amount || amount < 10000) return alert('Tối thiểu 10,000');
+            fetch(`${API}/api/create-code`, {
+                method:'POST',
+                headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ amount })
+            }).then(r=>r.json()).then(d=>{
+                if(d.error) return alert(d.error);
+                document.getElementById('generated-code').textContent = d.code;
+                document.getElementById('code-result').classList.remove('hidden');
+                loadUser();
+            });
+        }
+
+        function loadAdminCodes() {
+            const search = document.getElementById('search-code').value || '';
+            fetch(`${API}/api/admin/codes?search=${search}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(r=>r.json()).then(codes => {
+                const tbody = document.querySelector('#admin-codes-table tbody');
+                tbody.innerHTML = '';
+                codes.forEach(c => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${c.username}</td><td>${c.code}</td><td>${c.amount}</td><td>${c.status}</td>
+                    <td>${c.status==='pending' ? `<button onclick="approve(${c.id})">✔️ Duyệt</button>` : ''}</td>`;
+                    tbody.appendChild(tr);
+                });
+            });
+        }
+
+        function approve(id) {
+            fetch(`${API}/api/admin/code-status`, {
+                method:'POST',
+                headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ codeId: id, status: 'approved' })
+            }).then(r=>r.json()).then(() => loadAdminCodes());
+        }
+    </script>
+</body>
+</html>
