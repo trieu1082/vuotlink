@@ -63,17 +63,18 @@
             <div id="shorten-tab" class="card">
                 <h2>Tạo link rút gọn qua dịch vụ</h2>
                 <div class="service-select" id="service-selector">
-                    <div class="service-option selected" data-service="linktot">LinkTot</div>
-                    <div class="service-option" data-service="layma">LayMa</div>
+                    <div class="service-option" data-service="linktot">LinkTot (chưa hỗ trợ)</div>
+                    <div class="service-option selected" data-service="layma">LayMa</div>
                     <div class="service-option" data-service="link4m">Link4M</div>
                 </div>
-                <input type="text" id="target-url" placeholder="Link cần rút gọn (ví dụ: https://example.com)">
+                <input type="text" id="target-url" placeholder="Link cần rút gọn (ví dụ: https://example.com)" required>
                 <button onclick="createLink()">Tạo link ngay</button>
                 <div id="created-link-result" class="hidden" style="margin-top:20px;">
                     <p>Link của bạn: <strong id="shortened-url" style="color:#feca57;"></strong></p>
                     <p>Bạn nhận được <strong>500 Coin</strong> / click</p>
                     <button onclick="copyLink()">📋 Copy</button>
                 </div>
+                <div id="error-message" style="color:red; margin-top:10px;"></div>
             </div>
 
             <div id="history-tab" class="card hidden">
@@ -109,7 +110,7 @@
         const API = window.location.origin;
         let token = localStorage.getItem('token');
         let user = JSON.parse(localStorage.getItem('user'));
-        let selectedService = 'linktot';
+        let selectedService = 'layma'; // mặc định
 
         if (token && user) { showMain(); loadUser(); loadLinks(); }
 
@@ -174,13 +175,21 @@
         }
 
         function createLink() {
-            const url = document.getElementById('target-url').value;
+            const url = document.getElementById('target-url').value.trim();
+            if (!url) {
+                document.getElementById('error-message').textContent = 'Vui lòng nhập link cần rút gọn.';
+                return;
+            }
+            document.getElementById('error-message').textContent = '';
             fetch(`${API}/api/shorten`, {
                 method:'POST',
                 headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ service: selectedService, url: url })
             }).then(r=>r.json()).then(d=>{
-                if(d.error) return alert(d.error);
+                if(d.error) {
+                    document.getElementById('error-message').textContent = d.error;
+                    return;
+                }
                 document.getElementById('shortened-url').textContent = d.shortUrl;
                 document.getElementById('created-link-result').classList.remove('hidden');
                 loadLinks();
